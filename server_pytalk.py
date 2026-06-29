@@ -129,4 +129,4 @@ def disconnect(sid):
 
 if __name__ == '__main__':
     print("🚀 Server PyTalk Đang Hoạt Động Trên Cổng 5000...")
-    eventlet.wsgi.server(eventlet.listen(('127.0.0.1', 2011)), app)
+    eventlet.wsgi.server(eventlet.listen(('.0.0.0', 5000)), app)
