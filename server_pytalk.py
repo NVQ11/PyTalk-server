@@ -8,7 +8,7 @@ from datetime import datetime
 sio = socketio.Server(cors_allowed_origins='*')
 app = socketio.WSGIApp(sio)
 
-# Database
+# ------------------ Dữ liệu ------------------
 registered_users = {
     "admin": {"password": "123", "email": "admin@pytalk.com", "saved_rooms": []}
 }
@@ -30,11 +30,33 @@ def get_username(sid):
 def timestamp_now():
     return datetime.now().isoformat()
 
-# ------------------ Events ------------------
+# ------------------ Sự kiện kết nối ------------------
 @sio.event
 def connect(sid, environ):
     print(f"[+] Kết nối: {sid}")
 
+@sio.event
+def disconnect(sid):
+    username = get_username(sid)
+    if username:
+        empty_rooms = []
+        for rid, room in rooms_data.items():
+            if username in room['users']:
+                room['users'].remove(username)
+                sio.emit('system_message', {
+                    'sender': 'Hệ Thống',
+                    'content': f'--- {username} đã ngắt kết nối ---'
+                }, room=rid)
+                if not room['users']:
+                    empty_rooms.append(rid)
+                else:
+                    update_room_and_lobby(rid)
+        for rid in empty_rooms:
+            del rooms_data[rid]
+        del sid_to_username[sid]
+        broadcast_rooms_list()
+
+# ------------------ Xác thực ------------------
 @sio.on('login')
 def handle_login(sid, data):
     username = data.get('username')
@@ -67,7 +89,7 @@ def handle_forgot_password(sid, data):
             return {"status": "success", "message": f"Đã gửi link đặt lại mật khẩu tới {info['email']}"}
     return {"status": "error", "message": "Không tìm thấy tài khoản!"}
 
-# ------------------ Quản lý phòng ------------------
+# ------------------ Phòng ------------------
 @sio.on('create_room')
 def handle_create_room(sid, data):
     name = data.get('room_name')
@@ -94,7 +116,7 @@ def handle_join_room(sid, data):
     if username not in room['users']:
         room['users'].append(username)
     sio.enter_room(sid, room_id)
-    # Gửi lịch sử tin nhắn cho người mới
+    # Gửi lịch sử tin nhắn
     sio.emit('message_history', {'messages': room['messages']}, to=sid)
     sio.emit('system_message', {
         'sender': 'Hệ Thống',
@@ -165,8 +187,7 @@ def handle_edit_message(sid, data):
             msg['edited'] = True
             sio.emit('message_edited', {
                 'message_id': msg_id,
-                'new_content': new_content,
-                'edited': True
+                'new_content': new_content
             }, room=room_id)
             break
 
@@ -216,29 +237,9 @@ def broadcast_rooms_list():
     rooms = [{'id': rid, 'name': r['name'], 'mode': r['mode']} for rid, r in rooms_data.items()]
     sio.emit('refresh_rooms_list', {'rooms': rooms})
 
-@sio.event
-def disconnect(sid):
-    username = get_username(sid)
-    if username:
-        empty_rooms = []
-        for rid, room in rooms_data.items():
-            if username in room['users']:
-                room['users'].remove(username)
-                sio.emit('system_message', {
-                    'sender': 'Hệ Thống',
-                    'content': f'--- {username} đã ngắt kết nối ---'
-                }, room=rid)
-                if not room['users']:
-                    empty_rooms.append(rid)
-                else:
-                    update_room_and_lobby(rid)
-        for rid in empty_rooms:
-            del rooms_data[rid]
-        del sid_to_username[sid]
-        broadcast_rooms_list()
-
+# ------------------ Xử lý request không phải socket.io ------------------
 def my_app(environ, start_response):
-    path = environ['PATH_INFO']
+    path = environ.get('PATH_INFO', '')
     if path.startswith('/socket.io'):
         return app(environ, start_response)
     else:
@@ -247,4 +248,5 @@ def my_app(environ, start_response):
 
 if __name__ == '__main__':
     print("🚀 Server PyTalk nâng cấp đang chạy cổng 5000...")
-    eventlet.wsgi.server(eventlet.listen(('127.0.0.1', 5000)), my_app)
+    # Chạy trên 0.0.0.0 để cho phép truy cập từ bên ngoài (nếu cần)
+    eventlet.wsgi.server(eventlet.listen(('0.0.0.0', 5000)), my_app)
