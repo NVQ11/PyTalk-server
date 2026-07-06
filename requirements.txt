@@ -1,5 +1,6 @@
 customtkinter
 python-socketio[client]>=5.10.0
+eventlet
 Pillow
 sounddevice
 numpy
