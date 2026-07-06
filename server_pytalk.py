@@ -237,6 +237,14 @@ def disconnect(sid):
         del sid_to_username[sid]
         broadcast_rooms_list()
 
+def my_app(environ, start_response):
+    path = environ['PATH_INFO']
+    if path.startswith('/socket.io'):
+        return app(environ, start_response)
+    else:
+        start_response('200 OK', [('Content-Type', 'text/plain')])
+        return [b'PyTalk Server is running']
+
 if __name__ == '__main__':
     print("🚀 Server PyTalk nâng cấp đang chạy cổng 5000...")
-    eventlet.wsgi.server(eventlet.listen(('127.0.0.1', 5000)), app)
+    eventlet.wsgi.server(eventlet.listen(('127.0.0.1', 5000)), my_app)
