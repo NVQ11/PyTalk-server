@@ -8,12 +8,12 @@ from datetime import datetime
 sio = socketio.Server(cors_allowed_origins='*')
 app = socketio.WSGIApp(sio)
 
-# ------------------ Dữ liệu ------------------
+# Dữ liệu giả lập server
 registered_users = {
     "admin": {"password": "123", "email": "admin@pytalk.com", "saved_rooms": []}
 }
 sid_to_username = {}
-rooms_data = {}  # room_id -> {name, mode, users, messages}
+rooms_data = {}  # room_id -> {name, mode, password, users, messages}
 
 def generate_room_id():
     while True:
@@ -30,33 +30,12 @@ def get_username(sid):
 def timestamp_now():
     return datetime.now().isoformat()
 
-# ------------------ Sự kiện kết nối ------------------
+# Sự kiện kết nối
 @sio.event
 def connect(sid, environ):
     print(f"[+] Kết nối: {sid}")
 
-@sio.event
-def disconnect(sid):
-    username = get_username(sid)
-    if username:
-        empty_rooms = []
-        for rid, room in rooms_data.items():
-            if username in room['users']:
-                room['users'].remove(username)
-                sio.emit('system_message', {
-                    'sender': 'Hệ Thống',
-                    'content': f'--- {username} đã ngắt kết nối ---'
-                }, room=rid)
-                if not room['users']:
-                    empty_rooms.append(rid)
-                else:
-                    update_room_and_lobby(rid)
-        for rid in empty_rooms:
-            del rooms_data[rid]
-        del sid_to_username[sid]
-        broadcast_rooms_list()
-
-# ------------------ Xác thực ------------------
+# Xác thực
 @sio.on('login')
 def handle_login(sid, data):
     username = data.get('username')
@@ -83,21 +62,23 @@ def handle_register(sid, data):
 
 @sio.on('forgot_password')
 def handle_forgot_password(sid, data):
-    identity = data.get('identity')
+    email = data.get('email')
     for u, info in registered_users.items():
-        if u == identity or info['email'] == identity:
-            return {"status": "success", "message": f"Đã gửi link đặt lại mật khẩu tới {info['email']}"}
-    return {"status": "error", "message": "Không tìm thấy tài khoản!"}
+        if info['email'] == email:
+            return {"status": "success", "message": f"Đã gửi link đặt lại mật khẩu tới {email}"}
+    return {"status": "error", "message": "Không tìm thấy email này!"}
 
-# ------------------ Phòng ------------------
+# Quản lý phòng
 @sio.on('create_room')
 def handle_create_room(sid, data):
     name = data.get('room_name')
-    mode = data.get('room_mode')
+    mode = data.get('mode', 'public')
+    password = data.get('password', '')
     room_id = generate_room_id()
     rooms_data[room_id] = {
         'name': name,
         'mode': mode,
+        'password': password,
         'users': [],
         'messages': []
     }
@@ -107,12 +88,15 @@ def handle_create_room(sid, data):
 @sio.on('join_room')
 def handle_join_room(sid, data):
     room_id = data.get('room_id')
+    password = data.get('password', '')
     username = get_username(sid)
     if not username:
         return {"status": "error", "message": "Chưa đăng nhập!"}
     if room_id not in rooms_data:
         return {"status": "error", "message": "Phòng không tồn tại!"}
     room = rooms_data[room_id]
+    if room['mode'] == 'private' and room['password'] != password:
+        return {"status": "password_required"}
     if username not in room['users']:
         room['users'].append(username)
     sio.enter_room(sid, room_id)
@@ -123,6 +107,7 @@ def handle_join_room(sid, data):
         'content': f'--- {username} đã tham gia phòng ---'
     }, room=room_id)
     update_room_and_lobby(room_id)
+    # Tự động lưu phòng cho người dùng (client sẽ xử lý)
     return {"status": "success"}
 
 @sio.on('leave_room')
@@ -143,7 +128,7 @@ def handle_leave_room(sid, data):
             update_room_and_lobby(room_id)
         broadcast_rooms_list()
 
-# ------------------ Tin nhắn ------------------
+# Tin nhắn
 @sio.on('send_message')
 def handle_send_message(sid, data):
     room_id = data.get('room_id')
@@ -208,7 +193,7 @@ def handle_delete_message(sid, data):
             }, room=room_id)
             break
 
-# ------------------ Lưu phòng yêu thích ------------------
+# Lưu phòng yêu thích
 @sio.on('get_saved_rooms')
 def handle_get_saved_rooms(sid):
     username = get_username(sid)
@@ -222,7 +207,7 @@ def handle_save_rooms(sid, data):
     if username:
         registered_users[username]['saved_rooms'] = data.get('rooms', [])
 
-# ------------------ Hàm tiện ích ------------------
+# Cập nhật phòng
 def update_room_and_lobby(room_id):
     if room_id in rooms_data:
         room = rooms_data[room_id]
@@ -234,19 +219,38 @@ def update_room_and_lobby(room_id):
     broadcast_rooms_list()
 
 def broadcast_rooms_list():
-    rooms = [{'id': rid, 'name': r['name'], 'mode': r['mode']} for rid, r in rooms_data.items()]
+    rooms = []
+    for rid, r in rooms_data.items():
+        rooms.append({
+            'room_id': rid,
+            'room_name': r['name'],
+            'mode': r['mode'],
+            'users': r['users']
+        })
     sio.emit('refresh_rooms_list', {'rooms': rooms})
 
-# ------------------ Xử lý request không phải socket.io ------------------
-def my_app(environ, start_response):
-    path = environ.get('PATH_INFO', '')
-    if path.startswith('/socket.io'):
-        return app(environ, start_response)
-    else:
-        start_response('200 OK', [('Content-Type', 'text/plain')])
-        return [b'PyTalk Server is running']
+# Ngắt kết nối
+@sio.event
+def disconnect(sid):
+    username = get_username(sid)
+    if username:
+        empty_rooms = []
+        for rid, room in rooms_data.items():
+            if username in room['users']:
+                room['users'].remove(username)
+                sio.emit('system_message', {
+                    'sender': 'Hệ Thống',
+                    'content': f'--- {username} đã ngắt kết nối ---'
+                }, room=rid)
+                if not room['users']:
+                    empty_rooms.append(rid)
+                else:
+                    update_room_and_lobby(rid)
+        for rid in empty_rooms:
+            del rooms_data[rid]
+        del sid_to_username[sid]
+        broadcast_rooms_list()
 
 if __name__ == '__main__':
     print("🚀 Server PyTalk nâng cấp đang chạy cổng 5000...")
-    # Chạy trên 0.0.0.0 để cho phép truy cập từ bên ngoài (nếu cần)
-    eventlet.wsgi.server(eventlet.listen(('0.0.0.0', 5000)), my_app)
+    eventlet.wsgi.server(eventlet.listen(('0.0.0.0', 5000)), app)
