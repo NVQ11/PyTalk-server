@@ -8,17 +8,12 @@ from datetime import datetime
 sio = socketio.Server(cors_allowed_origins='*')
 app = socketio.WSGIApp(sio)
 
-# Cơ sở dữ liệu (lưu trên server)
+# Database
 registered_users = {
-    "admin": {
-        "password": "123",
-        "email": "admin@pytalk.com",
-        "saved_rooms": []
-    }
+    "admin": {"password": "123", "email": "admin@pytalk.com", "saved_rooms": []}
 }
 sid_to_username = {}
-rooms_data = {}        # room_id -> {name, mode, users, messages: []}
-# messages: mỗi tin nhắn là dict: id, sender, content, type, file_data, file_name, timestamp, reply_to, edited, deleted
+rooms_data = {}  # room_id -> {name, mode, users, messages}
 
 def generate_room_id():
     while True:
@@ -35,12 +30,11 @@ def get_username(sid):
 def timestamp_now():
     return datetime.now().isoformat()
 
-# ------------------ Sự kiện kết nối ------------------
+# ------------------ Events ------------------
 @sio.event
 def connect(sid, environ):
     print(f"[+] Kết nối: {sid}")
 
-# ------------------ Xác thực ------------------
 @sio.on('login')
 def handle_login(sid, data):
     username = data.get('username')
@@ -70,7 +64,7 @@ def handle_forgot_password(sid, data):
     identity = data.get('identity')
     for u, info in registered_users.items():
         if u == identity or info['email'] == identity:
-            return {"status": "success", "message": f"Đã gửi link đặt lại mật khẩu tới email {info['email']}"}
+            return {"status": "success", "message": f"Đã gửi link đặt lại mật khẩu tới {info['email']}"}
     return {"status": "error", "message": "Không tìm thấy tài khoản!"}
 
 # ------------------ Quản lý phòng ------------------
@@ -100,9 +94,8 @@ def handle_join_room(sid, data):
     if username not in room['users']:
         room['users'].append(username)
     sio.enter_room(sid, room_id)
-    # Gửi toàn bộ lịch sử tin nhắn cho người mới vào
+    # Gửi lịch sử tin nhắn cho người mới
     sio.emit('message_history', {'messages': room['messages']}, to=sid)
-    # Thông báo vào phòng
     sio.emit('system_message', {
         'sender': 'Hệ Thống',
         'content': f'--- {username} đã tham gia phòng ---'
@@ -155,7 +148,6 @@ def handle_send_message(sid, data):
         'deleted': False
     }
     rooms_data[room_id]['messages'].append(message)
-    # Broadcast cho mọi người trong phòng
     sio.emit('new_message', message, room=room_id)
 
 @sio.on('edit_message')
@@ -171,7 +163,6 @@ def handle_edit_message(sid, data):
         if msg['id'] == msg_id and msg['sender'] == username:
             msg['content'] = new_content
             msg['edited'] = True
-            # Broadcast sự kiện chỉnh sửa
             sio.emit('message_edited', {
                 'message_id': msg_id,
                 'new_content': new_content,
@@ -190,7 +181,6 @@ def handle_delete_message(sid, data):
     for msg in room['messages']:
         if msg['id'] == msg_id and msg['sender'] == username:
             msg['deleted'] = True
-            # Broadcast sự kiện xóa
             sio.emit('message_deleted', {
                 'message_id': msg_id,
                 'sender': username
@@ -211,7 +201,7 @@ def handle_save_rooms(sid, data):
     if username:
         registered_users[username]['saved_rooms'] = data.get('rooms', [])
 
-# ------------------ Các hàm tiện ích ------------------
+# ------------------ Hàm tiện ích ------------------
 def update_room_and_lobby(room_id):
     if room_id in rooms_data:
         room = rooms_data[room_id]
@@ -226,7 +216,6 @@ def broadcast_rooms_list():
     rooms = [{'id': rid, 'name': r['name'], 'mode': r['mode']} for rid, r in rooms_data.items()]
     sio.emit('refresh_rooms_list', {'rooms': rooms})
 
-# ------------------ Ngắt kết nối ------------------
 @sio.event
 def disconnect(sid):
     username = get_username(sid)
